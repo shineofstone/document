@@ -1,0 +1,206 @@
+#  让我先看看GTP长什么样子(2)
+
+​	想了解GTP的功能，最主要的通道肯定是查阅官方手册UG482  ，但是手册长达300多页，看起来也还要花费很长时间的，如果想快速了解GTP手册的内容，可以先看一下https://my.oschina.net/u/4323713/blog/4463279这个帖子。讲述的还是比较仔细的。
+
+​	我拿到的gtp核是来自于818工程中的，在此感谢肖强哥的代码
+
+​	gtp核内部主要包括了6个功能块,下文会一一介绍
+
+- gtp_cpll_railing
+- gtp_common_reset
+- gtp_common
+- gtp_usrclk_source
+- gtp_core
+- IBUFDS_GTES（代码中有显示，但是在vivado中并没有体现出来）
+- 顶层
+
+![image-20210108160254111](https://raw.githubusercontent.com/shineofstone/picture/master/image-20210108160254111.png)
+
+## 顶层
+
+​		其实对于GTP来说,核心的输入和输出还是比较少的.主要分为三类
+
+![image-20210111152047174](https://raw.githubusercontent.com/shineofstone/picture/master/image-20210111152047174.png)
+
+### IBUFDS_GTES
+
+#### 功能
+
+​		该模块主要的功能能是为了产生参考时钟，将参考时钟输出给gtp_common和gtp_cpll_railing
+
+#### 主要输入输出信号：
+
+| 信号名称 | I/O  | 用途                                        | 来源/去向                                                    |
+| -------- | ---- | ------------------------------------------- | ------------------------------------------------------------ |
+| I        | I    | 输入引脚参考时钟P相                         | 引脚                                                         |
+| IB       | I    | 输入引脚参考时钟N相                         | 引脚                                                         |
+| O        | O    | 输出到gtp_common,gtp_cpll_railing的参考时钟 | gtp_common.(GTREFCLK0_IN,GTREFCLK1_IN等)<br />gtp_cpll_railing.(refclk_in) |
+
+其硬件结构是这个样子的:
+
+![tupian1](https://raw.githubusercontent.com/shineofstone/picture/master/image-20210108162846438.png)
+
+### gtp_cpll_railing
+
+#### 功能
+
+用于产生cpll_pd_i信号来驱动gtp_common模块。**cpll_pd_i是低有效信号**:
+
+- cpll_pd_i为**高**的时候gtp_common**上电**
+- cpll_pd_i为**低**的时候gtp_common**下电**
+
+#### 主要输入输出信号：
+
+| 信号名称       | I/O  | 用途                                             | 来源/去向               |
+| -------------- | ---- | ------------------------------------------------ | ----------------------- |
+| refclk_in      | I    | 输入的参考时钟                                   | 见IBUFDS_GTES(O)        |
+| cpll_pd_out    | O    | 控制gtp_common的**power down** 信号              | gtp_common .(PLL0PD_IN) |
+| cpll_reset_out | O    | 用于驱动gtp_common模块复位的**三个复位信号之一** |                         |
+
+
+
+### gtp_common_reset
+
+#### 功能
+
+用于产生common_reset信号,是驱动gtp_common模块复位的**三个复位信号之一**.
+
+#### 主要的输入输出信号:
+
+| 信号名称     | I/O  | 用途                                             | 来源/去向          |
+| ------------ | ---- | ------------------------------------------------ | ------------------ |
+| STABLE_CLOCK | I    | 输入sysclk                                       | gtp顶层的sysclk_in |
+| SOFT_RESET   | I    | 与gtp顶层的输入的reset信号相连                   | gtp顶层的reset信号 |
+| COMMON_RESET | O    | 用于驱动gtp_common模块复位的**三个复位信号之一** |                    |
+
+### gtp_common
+
+#### 功能
+
+该模块从硬件角度上就是gtp的时钟中心，如下图所示，用于驱动gtp_core模块
+
+![tupian2](https://raw.githubusercontent.com/shineofstone/picture/master/image-20210108173616155.png)
+
+要点:
+
+- 一个pll可以驱动4个通道，
+  - 每个pll有7个参考时钟的输入通道,但是每一个pll都有2个通道没办法使用,所以每个pll只能有5个参考时钟输入选择。
+  - 个人感觉：最常用的还是1，2通道产生的的参考时钟，**由IBUFDS_GTE模块产生**。
+  - PLL0REFCLKSEL_IN信号是用来选择pll参考时钟输入通道的。
+- 一个QUAD中有2个pll，可以驱动8个通道
+- 一个GTP中有东西两个QUAD，一个GTP接口最大可以驱动16个通道
+
+#### 主要的输入输出信号:
+
+| 信号名称           | I/O  | 用途                                                         | 来源/去向                                        |
+| ------------------ | ---- | ------------------------------------------------------------ | ------------------------------------------------ |
+|                    |      |                                                              |                                                  |
+| PLL0LOCKDETCLK_IN  | I    | 稳定的参考时钟,用于检测PLL时钟<br />(个人感觉是检查时钟的稳定性和准确定) | 顶层的sysclk_in                                  |
+| PLL0RESET_IN       | I    | pll0的复位信号                                               | common_0_pll0reset_t                             |
+| PLL0PD_IN          | I    | pll0的上电信号                                               | gtp_cpll_railing.(cpll_pd_out)                   |
+| PLL0REFCLKSEL_IN   | I    | pll0输入参考时钟的选择                                       | 3'001对应GTREFCLK0_IN<br />3'010对应GTREFCLK1_IN |
+| GTREFCLK0_IN       | I    | 对应图片中1通道的输入参考时钟                                | IBUFDS_GTE2.(O)                                  |
+| GTREFCLK1_IN       | I    | 对应图片中2通道的输入参考时钟                                | IBUFDS_GTE2.(O)                                  |
+| PLL0OUTCLK_OUT     | O    | pll0输出的时钟信号                                           | gtp_core.(gt0_pll0outclk_in)                     |
+| PLL0OUTREFCLK_OUT  | O    | pll0输出的参考时钟                                           | gtp_core.(gt0_pll0outrefclk_in)                  |
+| PLL0LOCK_OUT       | O    | pll0输出的lock信号,只有lock信号拉高<br />pll才能产生时钟     | gtp_core.(gt0_pll0lock_in)                       |
+| PLL0REFCLKLOST_OUT | O    | 该信号拉高的时候,PLL的相位频率检测器的<br />参考时钟丢失。   | gtp_core.(gt0_pll0refclklost_in)                 |
+| PLL1OUTCLK_OUT     | O    | pll1输出的时钟                                               |                                                  |
+| PLL1OUTREFCLK_OUT  | O    | pll1输出的参考时钟                                           |                                                  |
+
+common_0_pll0reset_t = gt0_pll0reset_o |  COMMON_RESET     |   cpll_reset_out;
+
+
+
+### gtp_usrclk_source
+
+#### 功能:
+
+​		主要用来产生用户需要的时钟,用于驱动gtp_core，更本质的是驱动gtp_core下的两个针对TX，RX的状态机，以及gtp数据通道的。
+
+#### 主要的输入输出信号:
+
+| 信号名称             | I/O  | 用途                    | 来源/去向                        |
+| -------------------- | ---- | ----------------------- | -------------------------------- |
+| GT0_TXOUTCLK_IN      | I    | 将TX的时钟输入给该模块  | gtp_core.(gt0_txoutclk_out)      |
+| GT0_TX_MMCM_RESET_IN | I    | TX模块的MMCM的reset信号 | gtp_core..(gt0_txmmcm_reset_out) |
+| GT0_RX_MMCM_RESET_IN | I    | RX模块的MMCM的reset信号 | gtp_core.(gt0_rxmmcm_reset_out)  |
+| GT0_TXUSRCLK_OUT     | O    | 输出的TX的用户时钟      | gtp_core.(gt0_txusrclk_in)       |
+| GT0_TXUSRCLK2_OUT    | O    | 输出的TX的用户时钟2     | gtp_core.(gt0_txusrclk2_in)      |
+| GT0_TXCLK_LOCK_OUT   | O    | TX输出时钟的lock信号    | gtp_core.(gt0_txmmcm_lock_in)    |
+| GT0_RXUSRCLK_OUT     | O    | 输出的RX的用户时钟      | gtp_core.(gt0_rxusrclk_i)        |
+| GT0_RXUSRCLK2_OUT    | O    | 输出的RX的用户时钟      | gtp_core.(gt0_rxusrclk2_i)       |
+| GT0_RXCLK_LOCK_OUT   | O    | RX输出时钟的lock信号    | gtp_core.(gt0_rxmmcm_lock_in)    |
+
+PS:MMCM是混合模式时钟管理器.
+
+### gtp_core
+
+#### 功能:
+
+​		GTP的核心功能的实现就是通过这一部分的逻辑实现的.
+
+#### 主要的输入输出信号:
+
+```verilog
+.sysclk_in						(sysclk_in),					//	
+.soft_reset_tx_in				(soft_reset_tx_in),				//
+.soft_reset_rx_in				(soft_reset_rx_in),				//
+			
+.gt0_txoutclk_out               (gt0_txoutclk_i),				//
+.gt0_txmmcm_lock_in				(gt0_txmmcm_lock_i),			//
+.gt0_rxmmcm_lock_in				(gt0_rxmmcm_lock_i),			//
+.gt0_txmmcm_reset_out			(gt0_txmmcm_reset_i),			//
+.gt0_rxmmcm_reset_out			(gt0_rxmmcm_reset_i),			//
+
+.gt0_tx_fsm_reset_done_out		(gt0_tx_fsm_reset_done_out),	//
+.gt0_rx_fsm_reset_done_out		(gt0_rx_fsm_reset_done_out),	//
+
+.gt0_txusrclk_in				(gt0_txusrclk_i),				//
+.gt0_txusrclk2_in				(gt0_txusrclk2_i),				//	
+.gt0_rxusrclk_in				(gt0_rxusrclk_i),				//
+.gt0_rxusrclk2_in				(gt0_rxusrclk2_i),				//
+		
+.gt0_gtprxn_in					(gt0_gtprxn_in),				//输入gtp_rx的信号,n相
+.gt0_gtprxp_in					(gt0_gtprxp_in),			 	//输入gtp_rx的信号,P相
+.gt0_gtrxreset_in				(gt0_gtrxreset_in),				//
+.gt0_rxdata_out					(gt0_rxdata_out),				//
+.gt0_rxchariscomma_out			(gt0_rxchariscomma_out),		//该信号拉高时,显示对应的字节为comma字符
+.gt0_rxcharisk_out				(gt0_rxcharisk_out),			//该信号拉高时,显示对应的字节为K字符,仅当8B/10B解码有效是使用
+.gt0_rxdisperr_out				(gt0_rxdisperr_out),			//该信号拉高是,显示对应的字节RXDATA丢失,此信号是检查GTP模块是否正确的标志之一
+.gt0_rxnotintable_out			(gt0_rxnotintable_out),			//该信号拉高是,显示对应的字节RXDATA在8B/10B表中无效,此信号是检查GTP模块是否正确的标志之一
+.gt0_rxbyteisaligned_out		(gt0_rxbyteisaligned_out),		//信号为1,表示并行数据流与字节对齐,反之未对齐
+.gt0_rxbyterealign_out			(gt0_rxbyterealign_out),		//字节重新对齐信号,为1表示字节对齐方式更改了,反之未更改
+.gt0_rxcommadet_out				(gt0_rxcommadet_out),			//信号为1表示检测到了comma,反之为未检测到
+.gt0_rxoutclkfabric_out			(gt0_rxoutclkfabric_out),		//为测试保留的冗余输出,应该没啥大用途	
+.gt0_rxresetdone_out			(gt0_rxresetdone_out),			//rx完成resert的信号
+							
+.gt0_gtptxn_out					(gt0_gtptxn_out),				//输出的gtp_tx的信号,n相
+.gt0_gtptxp_out					(gt0_gtptxp_out),				//输出的gtp_tx的信号,P相
+.gt0_gttxreset_in				(gt0_gttxreset_in),				//
+.gt0_txdata_in					(gt0_txdata_in),				//gtp输入的数据
+.gt0_txcharisk_in				(gt0_txcharisk_in),				//同上
+.gt0_txoutclkfabric_out			(gt0_txoutclkfabric_out),		//同上
+.gt0_txoutclkpcs_out			(gt0_txoutclkpcs_out),			//冗余输出
+.gt0_txresetdone_out			(gt0_txresetdone_out),			//同上
+
+.gt0_pll0reset_o				(gt0_pll0reset_o),				//用于驱动gtp_common模块复位的**三个复位信号之一**
+.gt0_pll0outclk_in				(common_0_pll0outclk_i),		//见gtp_common
+.gt0_pll0outrefclk_in			(common_0_pll0outrefclk_i),		//见gtp_common
+.gt0_pll0lock_in				(common_0_pll0lock_i),			//见gtp_common
+.gt0_pll0refclklost_in			(common_0_pll0refclklost_i),    //见gtp_common
+.gt0_pll1outclk_in				(common_0_pll1outclk_i),		//见gtp_common
+.gt0_pll1outrefclk_in			(common_0_pll1outrefclk_i)		//见gtp_common
+//输出信号,外部逻辑如果没有需要的话,可以空接
+```
+
+#### 仿真
+
+![image-20210111161233679](https://raw.githubusercontent.com/shineofstone/picture/master/image-20210111161233679.png)
+
+- 复位信号输入
+- mmcm_lock信号拉高(复位完成)
+- 输入到gtp_core的四个时钟开始工作(如果这个时钟不工作,无法完成复位)
+- txresetdone完成
+- rxresetdone完成
+- rx开始进行数据传输,并且gt0_rxnotintable_out变为0(gt0_rxnotintable_out为0代表数据开始正常传输了.
